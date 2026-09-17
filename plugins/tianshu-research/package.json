@@ -37,5 +37,14 @@
       "net": true,
       "fs": true
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yq04/Tianshu-Research.git"
+  },
+  "homepage": "https://github.com/yq04/Tianshu-Research#readme",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "test:python": "python test/test_journal_palette.py"
   }
 }
