@@ -72,6 +72,12 @@ describe('getPaletteCommands', () => {
     assert.match(cmd.description, /install|import|claude/i)
   })
 
+  it('exposes /mcp market so TUI users can click-enable without a plugin sidebar', () => {
+    const cmd = getPaletteCommands().find(c => c.name === '/mcp market')
+    assert.ok(cmd, '/mcp market must be in palette')
+    assert.match(cmd.description, /MCP/)
+  })
+
   // 反证：UI 提示面板必须能通过子串过滤命中新增条目。filterCommands 用
   // substring + fuzzy 子序列匹配 — 输入 "plan" 必须返回所有 plan-* 命令。
   // 仅在 palette 列表里写名字但 filter 链路不通（如缺 description）会让

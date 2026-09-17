@@ -83,7 +83,7 @@ export default defineConfig({
   // truth (also synced to the public repo); this is a build-time copy, not a duplicate.
   async onSuccess() {
     const { readdirSync, mkdirSync, copyFileSync, existsSync } = await import('node:fs')
-    const { join } = await import('node:path')
+    const { join, resolve } = await import('node:path')
 
     // Hard gate: the bundled skills MUST reach dist/ or the packaged desktop app
     // ships with only the 2 hardcoded built-ins. publicDir copies
@@ -112,13 +112,29 @@ export default defineConfig({
 
     try {
       const files = readdirSync('docs').filter(f => /^seed-capsule-.+\.md$/.test(f))
-      if (files.length === 0) return
-      const dest = join('dist', 'seed-capsules')
-      mkdirSync(dest, { recursive: true })
-      for (const f of files) copyFileSync(join('docs', f), join(dest, f))
-      console.log(`[tsup] bundled ${files.length} seed-capsule(s) → dist/seed-capsules/`)
+      if (files.length > 0) {
+        const dest = join('dist', 'seed-capsules')
+        mkdirSync(dest, { recursive: true })
+        for (const f of files) copyFileSync(join('docs', f), join(dest, f))
+        console.log(`[tsup] bundled ${files.length} seed-capsule(s) → dist/seed-capsules/`)
+      }
     } catch (err) {
       console.warn('[tsup] seed-capsule bundling skipped:', (err as Error).message)
+    }
+
+    // First-party plugins (office-pdf, tianshu-research, …) must sit next to
+    // dist/main.js so `/plugin install <id>` and GET /plugins/presets work for
+    // npm CLI users — package.json `files` only ships dist/.
+    try {
+      const { pathToFileURL } = await import('node:url')
+      const { stagePluginsTo } = await import(pathToFileURL(resolve('scripts/stage-plugins.js')).href)
+      const n = stagePluginsTo(join('dist', 'plugins'))
+      if (n === 0) {
+        console.warn('[tsup] ⚠ dist/plugins is empty — marketplace install of first-party plugins will fail in the CLI package')
+      }
+    } catch (err) {
+      console.error('[tsup] ✗ plugin staging failed:', (err as Error).message)
+      process.exit(1)
     }
 
     // `clean: true` wipes the staged native/wasm payload but leaves the directory

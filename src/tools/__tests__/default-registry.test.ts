@@ -45,6 +45,9 @@ describe('createDefaultToolRegistry', () => {
     for (const name of desktop) {
       assert.equal(names.includes(name), false, `${name} should be gated behind desktopTools`)
     }
+    for (const r of ['research_query', 'research_evidence', 'journal_palette', 'research_status', 'paper_search', 'paper_lookup']) {
+      assert.equal(names.includes(r), false, `${r} must stay out of the default registry`)
+    }
     // kernel budget 25→26：为后台任务控制工具 `job` 让出一格（见 kernel-budget.test.ts 说明）。
     assert.ok(registry.getAll().length <= 26, `registry has ${registry.getAll().length} tools (kernel budget: 26)`)
   })

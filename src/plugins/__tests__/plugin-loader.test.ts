@@ -1,6 +1,6 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync, cpSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { ToolRegistry } from '../../tools/registry.js'
@@ -592,5 +592,31 @@ export const tools = [{
     const registry = new ToolRegistry()
     const result = await initializePlugins(undefined, registry, process.cwd())
     assert.ok(result.warnings.some(w => w.includes('escapes plugin directory')))
+  })
+
+  it('loads first-party tianshu-research (tools + research-flow skill)', async () => {
+    const { pluginsDir, pluginsSubdir } = freshEnv()
+    setHome(pluginsDir)
+    const src = join(process.cwd(), 'plugins', 'tianshu-research')
+    cpSync(src, join(pluginsSubdir, 'tianshu-research'), { recursive: true })
+
+    const registry = new ToolRegistry()
+    const result = await initializePlugins(undefined, registry, process.cwd())
+    try {
+      const item = result.results.find(r => r.pluginName === 'tianshu-research')
+      assert.ok(item, `expected plugin load result, got ${JSON.stringify(result.results)}`)
+      assert.equal(item!.status, 'loaded', item!.error)
+      assert.equal(item!.toolCount, 4)
+      assert.equal(item!.skillCount, 1)
+      assert.ok(registry.has('research_query'))
+      assert.ok(registry.has('research_evidence'))
+      assert.ok(registry.has('journal_palette'))
+      assert.ok(registry.has('research_status'))
+      const skill = skillRegistry.get('research-flow')
+      assert.ok(skill)
+      assert.equal(skill!.source, 'plugin')
+    } finally {
+      skillRegistry.unregister('research-flow')
+    }
   })
 })

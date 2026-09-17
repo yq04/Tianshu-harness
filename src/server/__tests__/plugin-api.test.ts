@@ -63,14 +63,35 @@ test('GET /plugins/presets returns presets list with installed/enabled flags', a
   }
 })
 
-test('GET /plugins/presets: uninstalled plugins are never reported enabled', async () => {
+test('GET /plugins/presets includes tianshu-research as uninstalled by default', async () => {
   const res = await ROUTES['GET /plugins/presets']!({}, undefined, authHeaders(), undefined)
-  const body = res.body as { presets: Array<{ installed: boolean; enabled: boolean }> }
-  for (const p of body.presets) {
-    if (!p.installed) {
-      assert.equal(p.enabled, false, 'the config "absent means enabled" default must not leak to uninstalled plugins')
-    }
-  }
+  assert.equal(res.status, 200)
+  const body = res.body as { presets: Array<{ id: string; installPath: string; installed: boolean; enabled: boolean; tools: string[] }> }
+  const p = body.presets.find(x => x.id === 'tianshu-research')
+  assert.ok(p, 'desktop marketplace must list 科研文献')
+  assert.equal(p.installPath, 'plugins/tianshu-research')
+  assert.equal(p.installed, false)
+  assert.equal(p.enabled, false)
+  assert.ok(p.tools.includes('research_query'))
+  assert.ok(p.tools.includes('research_evidence'))
+})
+
+test('POST /plugins/install preflight of plugins/tianshu-research returns the OA literature manifest', async () => {
+  const res = await ROUTES['POST /plugins/install']!(
+    { path: 'plugins/tianshu-research' },
+    undefined,
+    authHeaders(),
+    undefined,
+  )
+  assert.equal(res.status, 400)
+  const body = res.body as { ok: boolean; error: string; manifest?: { name: string; tools: Array<{ name: string }>; skills?: string[]; permissions: { net?: boolean } } }
+  assert.equal(body.ok, false)
+  assert.ok(body.error.includes('Confirmation required'), `got: ${body.error}`)
+  assert.equal(body.manifest?.name, 'tianshu-research')
+  assert.ok(body.manifest?.tools.some(t => t.name === 'research_query'))
+  assert.ok(body.manifest?.tools.some(t => t.name === 'research_evidence'))
+  assert.equal(body.manifest?.permissions.net, true)
+  assert.ok(body.manifest?.skills?.some(s => s.includes('research-flow')))
 })
 
 // ── Installed ─────────────────────────────────────────────────
@@ -169,6 +190,38 @@ test('POST /plugins/enable rejects missing enabled flag (400)', async () => {
 test('POST /plugins/enable returns 404 for uninstalled plugin', async () => {
   const res = await ROUTES['POST /plugins/enable']!({ name: 'nonexistent', enabled: true }, undefined, authHeaders(), undefined)
   assert.equal(res.status, 404)
+})
+
+test('POST /plugins/enable rejects tianshu-research when MCP server is active', async () => {
+  const pluginDir = join(testHome, 'plugins', 'tianshu-research')
+  mkdirSync(pluginDir, { recursive: true })
+  writeFileSync(join(pluginDir, 'package.json'), JSON.stringify({
+    name: 'tianshu-research', version: '0.1.0',
+    tianshu: { name: 'tianshu-research', version: '0.1.0', description: 'Test', entry: 'index.js', tools: [{ name: 'research_query', description: 'x' }], permissions: {} },
+  }))
+  cleanupDirs.push(pluginDir)
+
+  const { saveConfig } = await import('../../config/manager.js')
+  const cfg = loadConfig()
+  cfg.mcp.servers['tianshu-research'] = { command: 'node', args: ['server.js'] }
+  saveConfig(cfg)
+
+  const res = await ROUTES['POST /plugins/enable']!({ name: 'tianshu-research', enabled: true }, undefined, authHeaders(), undefined)
+  assert.equal(res.status, 400)
+  assert.match((res.body as { error: string }).error, /已在 MCP 服务中启用/)
+
+  // When MCP is disabled, enable plugin succeeds
+  cfg.mcp.servers['tianshu-research'].disabled = true
+  saveConfig(cfg)
+
+  const res2 = await ROUTES['POST /plugins/enable']!({ name: 'tianshu-research', enabled: true }, undefined, authHeaders(), undefined)
+  assert.equal(res2.status, 200)
+  assert.equal((res2.body as { ok: boolean }).ok, true)
+
+  // Clean up config
+  delete cfg.mcp.servers['tianshu-research']
+  delete cfg.plugins.enabled['tianshu-research']
+  saveConfig(cfg)
 })
 
 // ── Enable write-back ─────────────────────────────────────────

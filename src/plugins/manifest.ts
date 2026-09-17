@@ -95,6 +95,8 @@ export interface PluginPackageJson {
   name?: string
   version?: string
   tianshu?: Record<string, unknown>
+  dependencies?: Record<string, string>
+  optionalDependencies?: Record<string, string>
 }
 
 // ── Validation helpers ─────────────────────────────────────────────

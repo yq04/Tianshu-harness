@@ -1,0 +1,41 @@
+{
+  "name": "tianshu-research",
+  "version": "0.1.0",
+  "description": "OA literature search (arXiv + OpenAlex), Evidence Ledger, journal palettes, plus research-flow skill",
+  "private": true,
+  "type": "module",
+  "tianshu": {
+    "name": "tianshu-research",
+    "version": "0.1.0",
+    "description": "Click-to-install OA paper search (arXiv/OpenAlex), Evidence Ledger, journal palettes, plus research screening skill. Not an auto-paper writer.",
+    "entry": "index.js",
+    "tools": [
+      {
+        "name": "research_query",
+        "description": "Read-only scholarly query gateway for paper search and metadata resolution across arXiv and OpenAlex."
+      },
+      {
+        "name": "research_evidence",
+        "description": "Structured scientific evidence ledger gateway. Manage sources, exact-locator evidence, and claims in the research workspace."
+      },
+      {
+        "name": "journal_palette",
+        "description": "Journal figure hex palettes (100 curated publication palettes for Python). id 1–100, role, or ColorBrewer name."
+      },
+      {
+        "name": "research_status",
+        "description": "Optional diagnostic tool to inspect research workspace status, evidence ledger statistics, and palettes."
+      }
+    ],
+    "skills": [
+      "skills/research-flow"
+    ],
+    "commands": [
+      "commands"
+    ],
+    "permissions": {
+      "net": true,
+      "fs": true
+    }
+  }
+}

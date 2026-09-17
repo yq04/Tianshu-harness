@@ -972,6 +972,7 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
   Object.assign(routes, buildMcpRoutes({
     getMcpManager: () => sharedRuntime.mcpManager,
     onToolsReady: (tools) => sharedRuntime.sessions?.injectMcpTools(tools),
+    onToolsRemoved: (serverId) => sharedRuntime.sessions?.removeMcpTools(serverId),
     apiToken,
   }))
 

@@ -88,7 +88,7 @@ export const HELP_TEXT = `Available commands:
 /context [pin|claims|antibodies|conflicts|reload|export|import] — Context ledger
 /memory [text|add|search|forget] — Session memory entries
 /debug [prompt|fingerprint|cache|context-payload|mcp] — Debug info
-/mcp — Show MCP server status
+/mcp [market|enable <id>|disable <id>|auth|logs] — MCP status; market/enable is the TUI counterpart of Settings → MCP 服务
 /logs [open [desktop]] — 本会话日志落点（会话 / 缓存 / 六维 / 桌面 sidecar），带写入门控与回收策略；open 直接在文件管理器里打开
 /sensorium — Show 天枢 3D self-awareness state
 /prefix-budget — 前缀预算归因：各块字符/token 占比 + 当前档位

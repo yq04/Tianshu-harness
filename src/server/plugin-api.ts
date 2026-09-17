@@ -1,3 +1,4 @@
+import { checkResearchSurfaceConflict } from '../plugins/research-conflict.js'
 /**
  * /plugins/* routes — Plugin management for the desktop settings UI.
  * All routes are Bearer-gated (fail-closed).
@@ -16,89 +17,11 @@ import { installPlugin, removePlugin, getInstalledPlugins, isPluginInstalled, ty
 import { invalidatePluginToolsCache } from './plugin-session-cache.js'
 import { parseManifest } from '../plugins/manifest.js'
 import { cloneGitSource, GitCloneError } from '../plugins/git-source.js'
+import { resolveSourcePath } from '../plugins/resolve-source.js'
 import { readFileSync, existsSync } from 'node:fs'
-import { join, isAbsolute, dirname, sep, normalize } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, isAbsolute } from 'node:path'
 
-/**
- * The project root in dev: the parent of dist/ (where main.js is emitted).
- * Packaged installs resolve first-party presets via `bundledPluginsDir()` —
- * `projectRoot()` alone lands on the install root (tsup flat chunks → three
- * dirnames), which does not contain `plugins/`.
- */
-function projectRoot(): string {
-  // In dev, process.env.RIVET_SIDECAR_ENTRY points to repo's dist/main.js.
-  const entry = process.env.RIVET_SIDECAR_ENTRY
-  if (entry) return dirname(dirname(entry))
-  // Otherwise: module lives under dist/ (or a flat chunk next to main.js);
-  // project root is parent of dist/.
-  return dirname(dirname(dirname(fileURLToPath(import.meta.url))))
-}
-
-/**
- * Locate the packaged `plugins/` tree shipped beside `rivet-runtime/`
- * (tauri maps `resources/plugins-staged` → `plugins`). Prefer the explicit
- * override from the desktop shell; fall back to siblings of this module.
- */
-export function bundledPluginsDir(): string | null {
-  const override = process.env.RIVET_BUNDLED_PLUGINS_DIR
-  if (override) {
-    try {
-      if (existsSync(override)) return override
-    } catch {
-      /* fall through */
-    }
-  }
-  let base: string
-  try {
-    base = dirname(fileURLToPath(import.meta.url))
-  } catch {
-    return null
-  }
-  // Packaged: rivet-runtime/{main,chunk-*.js} → ../plugins
-  // Nested chunk layout (if any) → ../../plugins
-  for (const candidate of [
-    join(base, '..', 'plugins'),
-    join(base, '..', '..', 'plugins'),
-  ]) {
-    try {
-      if (existsSync(candidate)) return candidate
-    } catch {
-      /* ignore */
-    }
-  }
-  return null
-}
-
-/**
- * Resolve a possibly-relative plugin source path to an absolute path.
- * Relative paths prefer the repo project root (dev); packaged presets under
- * `plugins/<id>` fall back to the bundled resources tree.
- */
-export function resolveSourcePath(inputPath: string): string {
-  if (isAbsolute(inputPath)) return inputPath
-  const fromRoot = join(projectRoot(), inputPath)
-  if (existsSync(fromRoot)) return fromRoot
-
-  const normalized = normalize(inputPath)
-  const pluginsPrefix = `plugins${sep}`
-  const pluginsPrefixPosix = 'plugins/'
-  if (
-    normalized === 'plugins'
-    || normalized.startsWith(pluginsPrefix)
-    || normalized.startsWith(pluginsPrefixPosix)
-  ) {
-    const bundled = bundledPluginsDir()
-    if (bundled) {
-      const rest = normalized === 'plugins'
-        ? ''
-        : normalized.slice(normalized.startsWith(pluginsPrefix) ? pluginsPrefix.length : pluginsPrefixPosix.length)
-      const candidate = rest ? join(bundled, rest) : bundled
-      if (existsSync(candidate)) return candidate
-    }
-  }
-  return fromRoot
-}
+export { bundledPluginsDir, resolveSourcePath } from '../plugins/resolve-source.js'
 
 /** Read a plugin manifest from a source WITHOUT installing. Used by the
  *  preflight (confirm=false) phase so the UI can show permissions before the
@@ -294,6 +217,12 @@ export function buildPluginRoutes(apiToken?: string): Record<string, RouteHandle
         return { status: 400, body: { error: 'Missing required field: enabled (boolean)' } }
       }
 
+      if (input.name === 'tianshu-research' && input.enabled === true) {
+        const conflict = checkResearchSurfaceConflict('plugin')
+        if (conflict.conflict) {
+          return { status: 400, body: { error: conflict.error } }
+        }
+      }
       if (!isPluginInstalled(input.name)) {
         return { status: 404, body: { error: `Plugin "${input.name}" is not installed` } }
       }

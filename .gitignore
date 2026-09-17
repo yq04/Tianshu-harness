@@ -169,3 +169,12 @@ src/**/__tests__/.undo-test-backup/
 
 # 公开仓：禁止 knowledge 回灌（私有仓策略不同；仅保留 .rivet/SELF）
 .rivet/knowledge/
+
+# MATLAB TheBestColor 原包（运行时用 plugins/tianshu-research/figure/，不入库 .p / RAR）
+*TheBestColor.rar
+
+# Tauri bundling staging
+desktop/src-tauri/resources/plugins-staged/
+# Local research workspace data
+.rivet/research/
+tianshu_article.txt

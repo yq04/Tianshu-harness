@@ -1,9 +1,9 @@
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { resolveAppPromptInput, handleSlashCommand, formatVerificationStatus, mcpStatusText, resolveBareSkillPrompt, type SlashHandlerContext } from '../slash-commands.js'
+import { mkdirSync, writeFileSync, existsSync, rmSync, mkdtempSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { resolveAppPromptInput, handleSlashCommand, formatVerificationStatus, mcpStatusText, MCP_USAGE, resolveBareSkillPrompt, type SlashHandlerContext } from '../slash-commands.js'
 import { skillRegistry } from '../../skills/skill-loader.js'
 import { handleYoloToggle } from '../yolo-toggle.js'
 import { loadConstellation } from '../../constellation/store.js'
@@ -1706,6 +1706,89 @@ describe('mcpStatusText（/mcp 裸命令真实状态，与 /debug mcp 同源）'
     assert.match(text, /context7: connected — 2 tools/)
     assert.match(text, /broken: error: spawn npx ENOENT/)
     assert.match(text, /mcp__context7__resolve/)
+  })
+})
+
+describe('/mcp market / enable / disable', () => {
+  function withTempHome(fn: () => Promise<void>): Promise<void> {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-slash-'))
+    const prev = process.env.RIVET_HOME
+    process.env.RIVET_HOME = dir
+    return fn().finally(() => {
+      if (prev === undefined) delete process.env.RIVET_HOME
+      else process.env.RIVET_HOME = prev
+      rmSync(dir, { recursive: true, force: true })
+    })
+  }
+
+  it('/mcp unknown subcommand prints market/enable usage', async () => {
+    let captured = ''
+    const ctx = makeCtx({
+      parts: ['/mcp', 'wat'],
+      pushStatic: (line: LogEntry) => { captured += line.content },
+    })
+    await handleSlashCommand(ctx)
+    assert.match(captured, /\/mcp market/)
+    assert.match(captured, /\/mcp enable/)
+    assert.equal(MCP_USAGE.includes('/mcp enable'), true)
+  })
+
+  it('/mcp market lists 科研文献', async () => {
+    await withTempHome(async () => {
+      let captured = ''
+      const ctx = makeCtx({
+        parts: ['/mcp', 'market'],
+        pushStatic: (line: LogEntry) => { captured += line.content },
+      })
+      await handleSlashCommand(ctx)
+      assert.match(captured, /tianshu-research/)
+      assert.match(captured, /科研文献/)
+    })
+  })
+
+  it('/mcp enable github is blocked (needs credentials)', async () => {
+    await withTempHome(async () => {
+      let captured = ''
+      const ctx = makeCtx({
+        parts: ['/mcp', 'enable', 'github'],
+        pushStatic: (line: LogEntry) => { captured += line.content },
+      })
+      await handleSlashCommand(ctx)
+      assert.match(captured, /credentials|OAuth|密钥/i)
+    })
+  })
+
+  it('/mcp enable tianshu-research persists and registers tools via manager', async () => {
+    await withTempHome(async () => {
+      const registered: string[] = []
+      const fakeTool = { definition: { name: 'mcp__tianshu-research__paper_search' } }
+      const mgr = {
+        getStates: () => [],
+        getToolsForServer: () => [],
+        connectAndDiscover: async () => [fakeTool],
+        shutdownServer: async () => {},
+      }
+      const ctx = makeCtx({
+        parts: ['/mcp', 'enable', 'tianshu-research'],
+        mcpManagerRef: { current: mgr as never },
+        agent: {
+          ...(makeCtx().agent as any),
+          config: {
+            toolRegistry: {
+              register: (t: { definition: { name: string } }) => { registered.push(t.definition.name) },
+              remove: () => true,
+              getAllNames: () => [...registered],
+            },
+          },
+          updateTools: () => {},
+        } as any,
+        pushStatic: () => {},
+      })
+      await handleSlashCommand(ctx)
+      assert.deepEqual(registered, ['mcp__tianshu-research__paper_search'])
+      const { loadConfig } = await import('../../config/manager.js')
+      assert.ok(loadConfig().mcp.servers['tianshu-research'])
+    })
   })
 })
 

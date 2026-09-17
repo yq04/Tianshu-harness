@@ -948,6 +948,23 @@ export function buildManagedAgent(
       }
       agent.updateTools()
     },
+    unregisterExternalTools: (target) => {
+      let removed = false
+      if (typeof target === 'string') {
+        for (const name of stores.toolRegistry.getAllNames()) {
+          if (name.startsWith(target)) {
+            if (stores.toolRegistry.remove(name)) removed = true
+          }
+        }
+      } else if (Array.isArray(target)) {
+        for (const name of target) {
+          if (stores.toolRegistry.remove(name)) removed = true
+        }
+      }
+      if (removed) {
+        agent.updateTools()
+      }
+    },
   }
 }
 

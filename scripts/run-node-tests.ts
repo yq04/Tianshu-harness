@@ -40,7 +40,7 @@ await mkdir(PROJECT_TMP, { recursive: true })
 // `scripts/` 也要收：打包裁剪（wasm 白名单 / typescript 瘦身 / 外来平台包过滤）与
 // 遥测探针的测试都住在那儿。曾经只 glob `src/`，那 4 个文件写了却从不执行——
 // 裁剪逻辑错了会直接毁发布产物，恰恰是最需要门禁的一类。
-const TEST_GLOBS = ['src/**/*.test.ts', 'scripts/**/*.test.ts']
+const TEST_GLOBS = ['src/**/*.test.ts', 'scripts/**/*.test.ts', 'plugins/**/*.test.js']
 
 const files: string[] = []
 for await (const file of glob(TEST_GLOBS)) {

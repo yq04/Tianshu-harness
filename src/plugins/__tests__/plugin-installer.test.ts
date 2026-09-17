@@ -73,6 +73,15 @@ describe('installPlugin', () => {
     }
   })
 
+  it('skips npm when the plugin has no runtime dependencies', async () => {
+    const src = createPluginSource('nodeps-plugin')
+    activeSrcDirs.push(src)
+    const result = await installPlugin({ kind: 'local', path: src })
+    assert.equal(result.ok, true, result.ok ? '' : result.error)
+    assert.ok(isPluginInstalled('nodeps-plugin'))
+    assert.equal(existsSync(join(testHome, 'plugins', 'nodeps-plugin', 'node_modules')), false)
+  })
+
   it('rejects a path without package.json', async () => {
     const emptyDir = join(process.cwd(), '.rivet', `plugin-empty-${randomUUID()}`)
     mkdirSync(emptyDir, { recursive: true })

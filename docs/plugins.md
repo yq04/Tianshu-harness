@@ -118,7 +118,23 @@ Manifest 定义在 `package.json` 的 `tianshu` 字段中（或独立的 `tiansh
 
 路径逃逸（`skills: ["../outside"]`）与 entry 同等拒绝加载该 skill 条目。变更插件 skill 需重启会话（与工具相同的前缀缓存纪律）。
 
-示例：`tianshu-design` 插件捆绑 `design-prototype` skill，提供 Codex Product Design 式的前端原型工作流提示词。
+示例：`tianshu-design` 插件捆绑 `design-prototype` skill；`tianshu-research` 捆绑 `research-flow` skill（OA 文献初筛）。
+
+## 第一方市场（点装）
+
+桌面端 Settings 的插件页读 `GET /plugins/presets`。TUI：`/plugin market`，然后 `/plugin install <id> --confirm`。预设默认不装。
+
+| id | 名称 | 工具 | 说明 |
+|----|------|------|------|
+| `office-pdf` | PDF 办公 | `pdf_create` / `pdf_read` | 真 PDF |
+| `office-excel` | Excel 办公 | `xlsx_read` / `xlsx_write` | 真 .xlsx |
+| `office-ppt` | PPT 办公 | `pptx_create` | 真 .pptx |
+| `tianshu-design` | 前端设计 | `ui_preview` 等 | 预览 + 设计 skill |
+| `tianshu-research` | 科研文献 | `research_query` / `research_evidence` / `journal_palette` / `research_status` | arXiv / OpenAlex 初筛 + 证据账本与门禁 + 顶刊色板 + `research-flow`。三档按意图选择（短用零写入/中用读卡/长用核实）。 |
+
+学术检索的新手点装入口是桌面 **Settings → MCP 服务** 或 TUI `/mcp enable tianshu-research`（默认关闭，不进内核工具表）。
+
+不要同时启用原生插件与 MCP 服务：两路通过 `checkResearchSurfaceConflict` 实行严格互斥保护，防止同一套科研工具出现双重指纹打碎前缀缓存。
 
 ## Tool 接口
 
@@ -224,8 +240,10 @@ CSV/TSV/TXT/MD 等真格式选项保留不动。
 
 ```
 /plugin list                          # 列出已安装插件
+/plugin market                        # 列出第一方点装预设
 /plugin info <name>                   # 查看插件详情
-/plugin install <local-path>          # 从本地路径安装
+/plugin install <id-or-path>          # 预检 manifest（市场 id 或本地路径）
+/plugin install <id-or-path> --confirm
 /plugin remove <name>                 # 删除插件
 /plugin enable <name>                 # 启用（下会话生效）
 /plugin disable <name>                # 停用（下会话生效）

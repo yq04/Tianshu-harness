@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { MCP_PRESETS, findMcpPreset } from '../../mcp/presets.js'
+import { MCP_PRESETS, findMcpPreset, materializeMcpPreset } from '../../mcp/presets.js'
 import { buildMcpRoutes } from '../mcp-api.js'
 import { createTransport } from '../../mcp/transport-factory.js'
 
@@ -61,6 +61,74 @@ test('preset provenance: author / repoUrl / docsUrl are well-formed when present
   }
 })
 
+test('paper-search preset: 学术检索条目契约（作者 / 仓库 / npx / 默认关闭）', () => {
+  const p = findMcpPreset('paper-search')
+  assert.ok(p, 'paper-search preset must exist')
+  assert.equal(p.transport, 'stdio')
+  assert.equal(p.command, 'npx')
+  assert.deepEqual(p.args, ['-y', '@smithery/cli', 'run', '@openags/paper-search-mcp'])
+  assert.equal(p.author?.name, 'openags')
+  assert.equal(p.repoUrl, 'https://github.com/openags/paper-search-mcp')
+  assert.ok((p.expectedTools?.length ?? 0) >= 1)
+})
+
+test('paper-search 默认关闭：列出预设不写 config，configuredIds 不含它', async () => {
+  await withTempHome(async () => {
+    const routes = buildMcpRoutes(() => null, 'secret-token')
+    const res = await routes['GET /mcp/presets']!({}, undefined, { authorization: 'Bearer secret-token' }, undefined)
+    assert.equal(res.status, 200)
+    const body = res.body as { presets: Array<{ id: string }>; configuredIds: string[] }
+    assert.ok(body.presets.some((p) => p.id === 'paper-search'), '预设目录里必须有它')
+    assert.ok(!body.configuredIds.includes('paper-search'), '列出预设不得把它标成已配置')
+
+    const { loadConfig } = await import('../../config/manager.js')
+    assert.equal(
+      loadConfig().mcp.servers['paper-search'],
+      undefined,
+      '默认关闭：不得预置进 mcp.servers',
+    )
+  })
+})
+
+test('tianshu-research MCP 预设：桌面 MCP 服务页的第一方科研卡片', () => {
+  const p = findMcpPreset('tianshu-research')
+  assert.ok(p, '科研文献必须出现在 MCP 预设里（桌面没有独立插件栏）')
+  assert.equal(p.name, '科研文献')
+  assert.equal(p.transport, 'stdio')
+  assert.equal(p.bundledScript, 'tianshu-research/mcp-server.js')
+  assert.ok(p.expectedTools?.includes('research_query'))
+  assert.ok(p.expectedTools?.includes('research_evidence'))
+  assert.ok(p.expectedTools?.includes('journal_palette'))
+  assert.ok(p.expectedTools?.includes('research_status'))
+  assert.equal(p.requiredEnv, undefined)
+})
+
+test('tianshu-research 默认关闭，GET /mcp/presets 把脚本解析成绝对路径', async () => {
+  await withTempHome(async () => {
+    const { materializeMcpPreset, findMcpPreset } = await import('../../mcp/presets.js')
+    const { existsSync } = await import('node:fs')
+    const routes = buildMcpRoutes(() => null, 'secret-token')
+    const res = await routes['GET /mcp/presets']!({}, undefined, { authorization: 'Bearer secret-token' }, undefined)
+    assert.equal(res.status, 200)
+    const body = res.body as {
+      presets: Array<{ id: string; command?: string; args?: string[] }>
+      configuredIds: string[]
+    }
+    const card = body.presets.find((p) => p.id === 'tianshu-research')
+    assert.ok(card, 'MCP 服务页必须有「科研文献」')
+    assert.ok(!body.configuredIds.includes('tianshu-research'))
+    assert.equal(card.command, process.execPath)
+    assert.ok(card.args?.[0] && existsSync(card.args[0]), `bundled script missing: ${card.args?.[0]}`)
+    assert.ok(card.args[0].replace(/\\/g, '/').endsWith('tianshu-research/mcp-server.js'))
+
+    const live = materializeMcpPreset(findMcpPreset('tianshu-research')!)
+    assert.equal(live.command, process.execPath)
+
+    const { loadConfig } = await import('../../config/manager.js')
+    assert.equal(loadConfig().mcp.servers['tianshu-research'], undefined)
+  })
+})
+
 test('tianshu-mcp preset: 官方 MCP 条目契约（作者 / 仓库 / 工具面）', () => {
   const p = findMcpPreset('tianshu-mcp')
   assert.ok(p, 'tianshu-mcp preset must exist')
@@ -114,6 +182,27 @@ test('显式开启：POST /mcp/servers 之后 id 才出现在 configuredIds', as
   })
 })
 
+test('POST /mcp/servers 只带 serverId 即可启用 bundled 科研文献', async () => {
+  await withTempHome(async () => {
+    const routes = buildMcpRoutes(() => null, 'secret-token')
+    const post = await routes['POST /mcp/servers']!(
+      { serverId: 'tianshu-research' },
+      undefined,
+      { authorization: 'Bearer secret-token' },
+      undefined,
+    )
+    assert.equal(post.status, 200)
+    const saved = (await import('../../config/manager.js')).loadConfig().mcp.servers['tianshu-research']
+    assert.ok(saved)
+    assert.equal(saved.command, process.execPath)
+    assert.ok(saved.args?.[0]?.replace(/\\/g, '/').endsWith('tianshu-research/mcp-server.js'))
+
+    const res = await routes['GET /mcp/presets']!({}, undefined, { authorization: 'Bearer secret-token' }, undefined)
+    const body = res.body as { configuredIds: string[] }
+    assert.ok(body.configuredIds.includes('tianshu-research'))
+  })
+})
+
 test('GET /mcp/presets returns presets + configuredIds (auth-gated)', async () => {
   const routes = buildMcpRoutes(() => null, 'secret-token')
   const handler = routes['GET /mcp/presets']!
@@ -127,6 +216,25 @@ test('GET /mcp/presets returns presets + configuredIds (auth-gated)', async () =
   assert.ok(Array.isArray(body.presets))
   assert.equal(body.presets.length, MCP_PRESETS.length)
   assert.ok(Array.isArray(body.configuredIds))
+})
+
+test('tianshu-research MCP 可本地握手并列出 research_query', async () => {
+  const preset = findMcpPreset('tianshu-research')
+  assert.ok(preset)
+  const live = materializeMcpPreset(preset)
+  const res = await createTransport(
+    { command: live.command!, args: live.args ?? [] },
+    { timeoutMs: 15_000 },
+  )
+  try {
+    const listed = await res.client.listTools()
+    const names = listed.tools.map((t) => t.name)
+    assert.ok(names.includes('research_query'), `got ${names.join(',')}`)
+    assert.ok(names.includes('research_evidence'), `got ${names.join(',')}`)
+    assert.ok(names.includes('journal_palette'), `got ${names.join(',')}`)
+  } finally {
+    await res.transport.close()
+  }
 })
 
 // ── live 联调：预设声明的 command/args 能不能真拉起上游 ──────────────────

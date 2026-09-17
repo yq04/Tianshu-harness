@@ -1,3 +1,4 @@
+import { checkResearchSurfaceConflict } from './research-conflict.js'
 /**
  * Plugin installer — copy + npm install lifecycle for plugin packages.
  *
@@ -118,6 +119,14 @@ export interface InstallError {
 
 export type InstallResult = InstallSuccess | InstallError
 
+function hasNpmDependencies(pkg: PluginPackageJson): boolean {
+  for (const key of ['dependencies', 'optionalDependencies'] as const) {
+    const bag = pkg[key]
+    if (bag && typeof bag === 'object' && Object.keys(bag).length > 0) return true
+  }
+  return false
+}
+
 export interface RemoveResult {
   ok: boolean
   error?: string
@@ -212,6 +221,12 @@ async function installFromLocal(sourcePath: string, origin?: PluginOrigin): Prom
   }
 
   const manifest = parseResult.manifest
+  if (manifest.name === 'tianshu-research') {
+    const conflict = checkResearchSurfaceConflict('plugin')
+    if (conflict.conflict) {
+      return { ok: false, error: conflict.error! }
+    }
+  }
   const installPath = join(pluginsDir(), manifest.name)
 
   // 2. Check for duplicate
@@ -229,36 +244,36 @@ async function installFromLocal(sourcePath: string, origin?: PluginOrigin): Prom
     return { ok: false, error: `Failed to copy plugin files: ${(err as Error).message}` }
   }
 
-  // 4. Run npm install. Prefer `node + npm-cli.js` (resolveNpmCliCommand) so
-  // we bypass npm.cmd's batch-script path resolution, which breaks on the
-  // space-bearing "Program Files (x86)" install path (Cannot find module
-  // 'npm\bin\npm-prefix.js'). Falls back to the system npm in dev/test.
-  const nodeDir = dirname(process.execPath)
-  const cliJs = join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js')
-  const installArgs = ['install', '--ignore-scripts', '--omit=dev']
-  const pathSep = process.platform === 'win32' ? ';' : ':'
-  const pathWithNode = process.env.PATH ? `${nodeDir}${pathSep}${process.env.PATH}` : nodeDir
-  try {
-    if (existsSync(cliJs)) {
-      // Direct: node <npm-cli.js> install --ignore-scripts --omit=dev
-      execFileSync(process.execPath, [cliJs, ...installArgs], {
-        cwd: installPath,
-        stdio: 'pipe',
-        timeout: 600_000,
-        env: { ...process.env, NODE_ENV: 'production', PATH: pathWithNode },
-        windowsHide: true,
-      })
-    } else {
-      // Dev/test fallback: system npm via shell
-      const npmCmd = resolveNpmCommand()
-      const { command, options } = npmInstallArgs(npmCmd)
-      execSync(command, { ...options, cwd: installPath, windowsHide: true })
+  // 4. Run npm install only when the plugin declares runtime deps.
+  // Dep-less first-party plugins (tianshu-research) must not spawn npm: on
+  // Windows, `node npm-cli.js` with cwd=plugin looks for npm-prefix.js inside
+  // the plugin tree and fails click-install with a 400. --omit=dev already
+  // ignores devDependencies, so those also do not count.
+  if (hasNpmDependencies(pkg)) {
+    const nodeDir = dirname(process.execPath)
+    const cliJs = join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+    const installArgs = ['install', '--ignore-scripts', '--omit=dev']
+    const pathSep = process.platform === 'win32' ? ';' : ':'
+    const pathWithNode = process.env.PATH ? `${nodeDir}${pathSep}${process.env.PATH}` : nodeDir
+    try {
+      if (existsSync(cliJs)) {
+        execFileSync(process.execPath, [cliJs, ...installArgs], {
+          cwd: installPath,
+          stdio: 'pipe',
+          timeout: 600_000,
+          env: { ...process.env, NODE_ENV: 'production', PATH: pathWithNode },
+          windowsHide: true,
+        })
+      } else {
+        const npmCmd = resolveNpmCommand()
+        const { command, options } = npmInstallArgs(npmCmd)
+        execSync(command, { ...options, cwd: installPath, windowsHide: true })
+      }
+    } catch (err) {
+      try { rmSync(installPath, { recursive: true, force: true }) } catch {}
+      const stderr = (err as { stderr?: Buffer }).stderr?.toString().slice(0, 500) ?? (err as Error).message
+      return { ok: false, error: `npm install failed: ${stderr}` }
     }
-  } catch (err) {
-    // Clean up failed install
-    try { rmSync(installPath, { recursive: true, force: true }) } catch {}
-    const stderr = (err as { stderr?: Buffer }).stderr?.toString().slice(0, 500) ?? (err as Error).message
-    return { ok: false, error: `npm install failed: ${stderr}` }
   }
 
   // 5. Persist origin metadata (git source). Best-effort: a failed write does

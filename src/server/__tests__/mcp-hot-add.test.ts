@@ -180,3 +180,76 @@ test('POST /mcp/servers accepts an absolute cwd', async () => {
     assert.equal(res.status, 200, JSON.stringify(res.body))
   })
 })
+
+test('DELETE /mcp/servers/:id calls onToolsRemoved and shuts down server', async () => {
+  await withTempHome(async () => {
+    let shutDownServer = ''
+    const mgr = new McpManager({ enabled: true, servers: {} })
+    mgr.shutdownServer = async (id) => {
+      shutDownServer = id
+    }
+    let removedId = ''
+    const routes = buildMcpRoutes({
+      getMcpManager: () => mgr,
+      onToolsRemoved: (id) => { removedId = id },
+      apiToken: 'tok',
+    })
+    const { loadConfig, saveConfig } = await import('../../config/manager.js')
+    const cfg = loadConfig()
+    cfg.mcp = { enabled: true, servers: { echo: { command: 'node', args: ['echo.js'] } } }
+    saveConfig(cfg)
+
+    const res = await routes['DELETE /mcp/servers/:id']!(
+      undefined,
+      { id: 'echo' },
+      { authorization: 'Bearer tok' },
+      undefined,
+    )
+    assert.equal(res.status, 200)
+    assert.equal(removedId, 'echo')
+    assert.equal(shutDownServer, 'echo')
+    assert.equal(loadConfig().mcp.servers['echo'], undefined)
+  })
+})
+
+test('disable while connect is pending drops late onToolsReady injection', async () => {
+  await withTempHome(async () => {
+    const mgr = new McpManager({ enabled: true, servers: {} })
+    let resolveConnect!: (tools: Tool[]) => void
+    const connectPromise = new Promise<Tool[]>((r) => { resolveConnect = r })
+    mgr.connectAndDiscover = async () => connectPromise
+    mgr.shutdownServer = async () => {}
+
+    let notified: Tool[] = []
+    const routes = buildMcpRoutes({
+      getMcpManager: () => mgr,
+      onToolsReady: (tools) => { notified = tools },
+      apiToken: 'tok',
+    })
+
+    // Start connecting
+    await routes['POST /mcp/servers']!(
+      { serverId: 'slow-server', command: 'node', args: ['slow.js'] },
+      undefined,
+      { authorization: 'Bearer tok' },
+      undefined,
+    )
+
+    // Now disable it while connect is pending
+    await routes['POST /mcp/servers']!(
+      { serverId: 'slow-server', command: 'node', args: ['slow.js'], disabled: true },
+      undefined,
+      { authorization: 'Bearer tok' },
+      undefined,
+    )
+
+    // Now the slow connect finally finishes
+    resolveConnect([{
+      definition: { name: 'mcp__slow-server__tool', description: 'slow', input_schema: { type: 'object', properties: {} } },
+      execute: async () => ({ content: 'done' }),
+    }])
+
+    await new Promise((r) => setTimeout(r, 20))
+    assert.equal(notified.length, 0, 'Late tools must be dropped after disable')
+  })
+})

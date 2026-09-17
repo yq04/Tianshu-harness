@@ -58,4 +58,14 @@ export const PLUGIN_PRESETS: PluginPreset[] = [
     tools: ['ui_preview', 'ui_diff', 'ui_palette', 'ui_responsive_audit'],
     permissions: { fs: true, net: true },
   },
+  {
+    id: 'tianshu-research',
+    name: '科研文献',
+    description:
+      'OA 文献初筛（arXiv / OpenAlex）+ 顶刊图色板 + research-flow。装进 ~/.rivet/plugins 后每个项目都会加载工具和 Skill，会改工具指纹。编码会话请用 MCP「科研文献」，不要 MCP 和插件一起开。',
+    category: 'productivity',
+    installPath: 'plugins/tianshu-research',
+    tools: ['research_query', 'research_evidence', 'journal_palette', 'research_status'],
+    permissions: { net: true, fs: true },
+  },
 ]

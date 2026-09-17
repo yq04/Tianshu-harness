@@ -9,8 +9,11 @@
  * tradeoff as provider API keys).
  */
 
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import type { McpTransportType } from './types.js'
 import type { McpOAuthConfig } from './oauth/types.js'
+import { bundledPluginsDir, projectRoot } from '../plugins/resolve-source.js'
 
 export interface McpPresetEnvField {
   /** Env var name passed to the MCP server process (e.g. GITHUB_PERSONAL_ACCESS_TOKEN). */
@@ -57,6 +60,9 @@ export interface McpPreset {
   /** Upstream repository URL — rendered as the card's "repository" entry. */
   repoUrl?: string
   docsUrl?: string
+  /** First-party script under bundled `plugins/` (e.g. `tianshu-research/mcp-server.js`).
+   *  Sidecar rewrites command/args to `process.execPath` + absolute path on GET/POST. */
+  bundledScript?: string
 }
 
 export const MCP_PRESETS: McpPreset[] = [
@@ -213,9 +219,57 @@ export const MCP_PRESETS: McpPreset[] = [
     author: { name: 'lanlan0811', url: 'https://github.com/lanlan0811' },
     repoUrl: 'https://github.com/lanlan0811/tianshu-mcp',
   },
+  {
+    id: 'tianshu-research',
+    name: '科研文献',
+    description:
+      '无需认证。arXiv / OpenAlex 搜 OA 文献、粘贴 abs/DOI 即查一篇；另含顶刊图 Python 色板（100 套顶刊经典色板改写）。默认关闭：点「启用」才写入配置并拉起本机进程。启用后 MCP 工具会变多，当前会话前缀缓存会重建一次。这是文献初筛 + 色板，不是自动写论文或投稿图工厂。付费 PDF / Google Scholar / 知网不在本工具里。',
+    category: 'knowledge',
+    transport: 'stdio',
+    command: 'node',
+    args: ['plugins/tianshu-research/mcp-server.js'],
+    bundledScript: 'tianshu-research/mcp-server.js',
+    expectedTools: ['research_query', 'research_evidence', 'journal_palette', 'research_status'],
+    author: { name: 'Tianshu', url: 'https://github.com/huiliyi37/Tianshu-harness' },
+    repoUrl: 'https://github.com/huiliyi37/Tianshu-harness',
+  },
+  {
+    id: 'paper-search',
+    name: '学术文献检索（多源）',
+    description:
+      '第三方：arXiv / PubMed / Semantic Scholar / OpenAlex 等公开源。默认关闭。首次 npx 可能要数十秒，有的环境需要 Smithery 账号。工具面比「科研文献」更大，前缀缓存会重建一次。不是系统综述。',
+    category: 'knowledge',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@smithery/cli', 'run', '@openags/paper-search-mcp'],
+    expectedTools: ['search_papers', 'download_with_fallback'],
+    author: { name: 'openags', url: 'https://github.com/openags' },
+    repoUrl: 'https://github.com/openags/paper-search-mcp',
+    docsUrl: 'https://github.com/openags/paper-search-mcp',
+  },
 ]
 
 /** Look up a preset by id. */
 export function findMcpPreset(id: string): McpPreset | undefined {
   return MCP_PRESETS.find((p) => p.id === id)
+}
+
+export function resolveBundledMcpScript(rel: string): string {
+  const bundled = bundledPluginsDir()
+  if (bundled) {
+    const candidate = join(bundled, rel)
+    if (existsSync(candidate)) return candidate
+  }
+  return join(projectRoot(), 'plugins', rel)
+}
+
+/** Rewrite first-party presets so desktop click-enable spawns the bundled script. */
+export function materializeMcpPreset(preset: McpPreset): McpPreset {
+  if (!preset.bundledScript) return preset
+  const { bundledScript, ...rest } = preset
+  return {
+    ...rest,
+    command: process.execPath,
+    args: [resolveBundledMcpScript(bundledScript)],
+  }
 }

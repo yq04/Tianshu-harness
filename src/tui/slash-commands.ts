@@ -69,8 +69,10 @@ import { loadConfig, saveConfig, registerVisionModelConfig } from '../config/man
 import { discoverVisionModels, validateVisionModel } from '../api/vision-model-onboarding.js'
 import { PROVIDER_PRESETS, isProviderPresetKey } from '../config/provider-presets.js'
 import { installPlugin, removePlugin, getInstalledPlugins, isPluginInstalled } from '../plugins/plugin-installer.js'
+import { checkResearchSurfaceConflict } from '../plugins/research-conflict.js'
 import { parseManifest } from '../plugins/manifest.js'
 import { PLUGIN_PRESETS } from '../plugins/plugin-presets.js'
+import { parsePluginInstallTokens, resolveMarketplacePluginPath } from '../plugins/resolve-source.js'
 import { switchAgentRuntime, switchAgentSession, switchAgentCwd, restorePlanModeFromMeta } from '../bootstrap.js'
 import { loadTodos, setTodoSession } from '../tools/todo.js'
 import { rememberUserNote, listUserNotes } from '../memory/user-remember.js'
@@ -92,6 +94,11 @@ import { routeReviewWorkflow, type ReviewMode, type ReviewOutcome } from '../age
 import type { ChangeSet } from '../agent/review-discipline.js'
 import { HELP_TEXT } from './format/help-text.js'
 import { contractModels } from '../config/contract-models.js'
+import {
+  disableMcpPreset,
+  enableMcpPreset,
+  formatMcpMarketText,
+} from '../mcp/preset-enable.js'
 
 /**
  * Framework-agnostic mutable ref. Structurally compatible with React's
@@ -324,6 +331,41 @@ export function mcpStatusText(mgr: import('../mcp/manager.js').McpManager | null
     lines.push('Tools: ' + tools.map(t => t.definition.name).join(', '))
   }
   return lines.join('\n')
+}
+
+export const MCP_USAGE = [
+  'Usage:',
+  '  /mcp — show status',
+  '  /mcp market — list click-enable presets (same catalog as Settings → MCP 服务)',
+  '  /mcp enable <id> — persist + connect a no-secret preset (e.g. tianshu-research)',
+  '  /mcp disable <id> — remove from config and disconnect',
+  '  /mcp auth <serverId> — start OAuth flow',
+  '  /mcp logs <serverId> [tail] — view stderr log buffer',
+].join('\n')
+
+function configuredMcpIds(): string[] {
+  try {
+    return Object.keys(loadConfig().mcp?.servers ?? {})
+  } catch {
+    return []
+  }
+}
+
+function registerMcpToolsOnAgent(agent: AgentLoop, tools: import('../tools/types.js').Tool[]): void {
+  const registry = agent.config?.toolRegistry
+  if (!registry || typeof registry.register !== 'function') return
+  for (const tool of tools) registry.register(tool)
+  agent.updateTools?.()
+}
+
+function unregisterMcpToolsOnAgent(agent: AgentLoop, serverId: string): void {
+  const registry = agent.config?.toolRegistry
+  if (!registry || typeof registry.remove !== 'function') return
+  const prefix = `mcp__${serverId}__`
+  for (const name of registry.getAllNames?.() ?? []) {
+    if (name.startsWith(prefix)) registry.remove(name)
+  }
+  agent.updateTools?.()
 }
 
 function knowledgeDir(): string {
@@ -2866,11 +2908,91 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
   },
   {
     name: '/mcp',
+    description: 'MCP status, marketplace, enable/disable presets',
     immediate: true,
     async handler(ctx) {
       const { parts, pushStatic, setIsStreaming } = ctx
       const subcmd = parts[1]?.toLowerCase() ?? 'status'
       const serverId = parts[2]
+
+      if (subcmd === 'market' || subcmd === 'marketplace') {
+        pushStatic(createLogEntry({ type: 'system', content: formatMcpMarketText(configuredMcpIds()) }))
+        setIsStreaming(false)
+        return true
+      }
+
+      if (subcmd === 'enable') {
+        if (!serverId) {
+          pushStatic(createLogEntry({ type: 'system', content: 'Usage: /mcp enable <id>\n' + MCP_USAGE, isError: true }))
+          setIsStreaming(false)
+          return true
+        }
+        const built = enableMcpPreset(serverId)
+        if (!built.ok) {
+          pushStatic(createLogEntry({ type: 'system', content: built.error, isError: true }))
+          setIsStreaming(false)
+          return true
+        }
+        let mgr = ctx.mcpManagerRef?.current
+        if (!mgr) {
+          const { McpManager } = await import('../mcp/manager.js')
+          mgr = new McpManager({ enabled: true, servers: {} })
+          if (ctx.mcpManagerRef) ctx.mcpManagerRef.current = mgr
+        }
+        const alreadyConnected = mgr.getStates().some((s) => s.serverId === serverId && s.status === 'connected')
+        if (alreadyConnected) {
+          const n = mgr.getToolsForServer(serverId).length
+          pushStatic(createLogEntry({
+            type: 'system',
+            content: `MCP "${serverId}" already enabled (${n} tools). Prefix cache already includes this server.`,
+          }))
+          setIsStreaming(false)
+          return true
+        }
+        pushStatic(createLogEntry({ type: 'system', content: `Enabling MCP "${serverId}"…` }))
+        try {
+          const tools = await mgr.connectAndDiscover(serverId, built.config)
+          registerMcpToolsOnAgent(ctx.agent, tools)
+          const names = tools.map((t) => t.definition.name).join(', ') || '(none yet)'
+          pushStatic(createLogEntry({
+            type: 'system',
+            content: `Enabled ${serverId} (${tools.length} tools): ${names}\nThis session's prefix cache will rebuild once because the tool list changed.`,
+          }))
+        } catch (err) {
+          pushStatic(createLogEntry({
+            type: 'system',
+            content: `Saved ${serverId} to config, but connect failed: ${(err as Error).message}\nRetry with /mcp enable ${serverId}, or check /mcp logs ${serverId}.`,
+            isError: true,
+          }))
+        }
+        setIsStreaming(false)
+        return true
+      }
+
+      if (subcmd === 'disable') {
+        if (!serverId) {
+          pushStatic(createLogEntry({ type: 'system', content: 'Usage: /mcp disable <id>\n' + MCP_USAGE, isError: true }))
+          setIsStreaming(false)
+          return true
+        }
+        const removed = disableMcpPreset(serverId)
+        if (!removed.ok) {
+          pushStatic(createLogEntry({ type: 'system', content: removed.error, isError: true }))
+          setIsStreaming(false)
+          return true
+        }
+        const mgr = ctx.mcpManagerRef?.current
+        if (mgr) {
+          await mgr.shutdownServer(serverId).catch(() => {})
+        }
+        unregisterMcpToolsOnAgent(ctx.agent, serverId)
+        pushStatic(createLogEntry({
+          type: 'system',
+          content: `Disabled MCP "${serverId}". Tool list changed — prefix cache will rebuild on the next turn.`,
+        }))
+        setIsStreaming(false)
+        return true
+      }
 
       if (subcmd === 'auth' && serverId) {
         try {
@@ -2944,7 +3066,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
         type: 'system',
         content: subcmd === 'status'
           ? mcpStatusText(ctx.mcpManagerRef?.current)
-          : 'Usage:\n  /mcp — show status\n  /mcp auth <serverId> — start OAuth flow\n  /mcp logs <serverId> [tail] — view stderr log buffer',
+          : MCP_USAGE,
       }))
       setIsStreaming(false)
       return true
@@ -3936,7 +4058,10 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
       setIsStreaming: (v: boolean) => { app.setStreamingState(v) },
       setCacheHitRate: (v: number) => { cacheHitRate = v },
       setSummaryState: () => {},
-      mcpManagerRef: { current: ctx.refs.mcpManager },
+      mcpManagerRef: {
+        get current() { return ctx.refs.mcpManager },
+        set current(value) { ctx.refs.mcpManager = value },
+      },
       // getter 惰性读 ctx——/cd 重建 claimStore 后（bootstrap switchAgentCwd 原地
       // 更新 ctx.claimStore），/context claims* 等检视命令读到的仍是当前 store。
       claimStoreRef: { get current() { return ctx.claimStore } },
@@ -4507,7 +4632,7 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
   // ── Plugin management ────────────────────────────────────────────
 
   register("/plugin", {
-    description: "Manage plugins — list, install, remove, enable, disable, info",
+    description: "Manage plugins — list, market, install, remove, enable, disable, info",
     immediate: true,
     handler: ({ app, trimmed }) => {
       const parts = trimmed.split(/\s+/)
@@ -4518,7 +4643,10 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
         const plugins = getInstalledPlugins()
         const cfg = loadConfig()
         if (plugins.length === 0) {
-          app.commitStatic('No plugins installed. Use /plugin install <path> to add one.')
+          const market = PLUGIN_PRESETS.map((p) => `  ${p.id} — ${p.name}`).join('\n')
+          app.commitStatic(
+            `No plugins installed.\nMarketplace:\n${market}\nInstall: /plugin install <id> --confirm\nExample: /plugin install office-pdf --confirm\nList all: /plugin market`,
+          )
           return true
         }
         const lines = ['Installed plugins:']
@@ -4528,6 +4656,19 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
         }
         lines.push('')
         lines.push('Use /plugin info <name> for details.')
+        app.commitStatic(lines.join('\n'))
+        return true
+      }
+
+      if (sub === 'market' || sub === 'marketplace') {
+        const lines = ['Plugin marketplace (click-install presets):']
+        for (const p of PLUGIN_PRESETS) {
+          const perms = Object.entries(p.permissions).filter(([, v]) => v).map(([k]) => k).join(', ') || 'none'
+          lines.push(`  ${p.id} — ${p.name}`)
+          lines.push(`    ${p.description}`)
+          lines.push(`    tools: ${p.tools.join(', ')} · permissions: ${perms}`)
+          lines.push(`    /plugin install ${p.id} --confirm`)
+        }
         app.commitStatic(lines.join('\n'))
         return true
       }
@@ -4550,16 +4691,16 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
       }
 
       if (sub === 'install') {
-        if (!arg) {
-          app.commitStatic('Usage: /plugin install <local-path> [--confirm]')
-          app.commitStatic('Install a plugin from a local directory.\n')
+        const { spec, confirm: confirmFlag } = parsePluginInstallTokens(parts.slice(2))
+        if (!spec) {
+          app.commitStatic('Usage: /plugin install <id-or-path> [--confirm]')
+          app.commitStatic('Install a marketplace preset (e.g. office-pdf) or a local directory.\n/plugin market lists presets.')
           return true
         }
         // 安装前预检（与桌面端 plugin-api 同语义）：先读 manifest 展示工具与
         // 权限声明，用户复核后加 --confirm 才真正落盘——权限展示不再发生在
-        // 安装完成之后。
-        const confirmFlag = arg.endsWith(' --confirm')
-        const srcPath = confirmFlag ? arg.slice(0, -' --confirm'.length).trim() : arg
+        // 安装完成之后。`--confirm` 是独立 argv，不能拼进 parts[2]。
+        const srcPath = resolveMarketplacePluginPath(spec)
         if (!confirmFlag) {
           try {
             const pkgJsonPath = resolve(srcPath, 'package.json')
@@ -4574,9 +4715,9 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
                 `  Name: ${m.name} v${m.version}\n` +
                 `  Tools: ${m.tools.map(t => t.name).join(', ') || 'none'}\n` +
                 `  Declared permissions: ${permStr}\n` +
-                `  Source: ${resolve(srcPath)}\n` +
+                `  Source: ${srcPath}\n` +
                 `插件代码在下次会话启动时以完整权限加载（声明权限为提示性）。\n` +
-                `确认安装请执行: /plugin install ${srcPath} --confirm`
+                `确认安装请执行: /plugin install ${spec} --confirm`
               )
             } else {
               app.commitStatic(`✗ Manifest invalid: ${parsed.errors.join('; ')}`, { isError: true })
@@ -4622,6 +4763,13 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
         if (!isPluginInstalled(arg)) {
           app.commitStatic(`✗ Plugin "${arg}" is not installed.`, { isError: true })
           return true
+        }
+        if (sub === 'enable' && arg === 'tianshu-research') {
+          const conflict = checkResearchSurfaceConflict('plugin')
+          if (conflict.conflict) {
+            app.commitStatic(`✗ ${conflict.error}`, { isError: true })
+            return true
+          }
         }
         const cfg = loadConfig()
         cfg.plugins.enabled[arg] = sub === 'enable'

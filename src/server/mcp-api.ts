@@ -1,3 +1,4 @@
+import { checkResearchSurfaceConflict } from '../plugins/research-conflict.js'
 /**
  * /mcp/* routes — MCP server management for the desktop settings UI.
  * All routes are Bearer-gated (fail-closed).
@@ -15,7 +16,8 @@ import { loadConfig, saveConfig, findProjectConfig } from '../config/manager.js'
 import { isProjectTrusted } from '../config/project-trust.js'
 import type { McpManager } from '../mcp/manager.js'
 import { mcpServerConfigSchema, type McpServerConfig } from '../mcp/config.js'
-import { MCP_PRESETS } from '../mcp/presets.js'
+import { MCP_PRESETS, findMcpPreset, materializeMcpPreset } from '../mcp/presets.js'
+import { presetToServerConfig } from '../mcp/preset-enable.js'
 import { serverLogger } from './logger.js'
 import type { Tool } from '../tools/types.js'
 import { findMcpOAuthProvider } from '../mcp/oauth/providers.js'
@@ -78,6 +80,8 @@ export interface McpRouteDeps {
   getMcpManager: () => McpManager | null
   /** Late-bound: inject newly discovered tools into live sessions. */
   onToolsReady?: (tools: Tool[]) => void
+  /** Late-bound: revoke tools belonging to a removed/disabled MCP server. */
+  onToolsRemoved?: (serverId: string) => void
   apiToken?: string
 }
 
@@ -92,6 +96,7 @@ export function buildMcpRoutes(
   const getMgr = deps.getMcpManager
   const token = deps.apiToken
   const onToolsReady = deps.onToolsReady
+  const serverGenerations = new Map<string, number>()
 
   const notifyTools = (mgr: McpManager, serverId: string) => {
     try {
@@ -142,7 +147,8 @@ export function buildMcpRoutes(
     // configured (mirrors provider `unconfigured` so the UI can render add state).
     'GET /mcp/presets': withAuth(() => {
       const configuredIds = Object.keys(cloneMcpServers())
-      return { status: 200, body: { presets: MCP_PRESETS, configuredIds } }
+      const presets = MCP_PRESETS.map((p) => materializeMcpPreset(p))
+      return { status: 200, body: { presets, configuredIds } }
     }, token),
 
     // POST /mcp/servers — add or update an MCP server config.
@@ -162,6 +168,35 @@ export function buildMcpRoutes(
       if (typeof input.transportHint === 'string') configInput.transportHint = input.transportHint
       if (input.auth && typeof input.auth === 'object') configInput.auth = input.auth
       if (input.policy && typeof input.policy === 'object') configInput.policy = input.policy
+
+      const preset = findMcpPreset(serverId)
+      if (preset) {
+        const built = presetToServerConfig(serverId)
+        if (preset.bundledScript) {
+          if (!built.ok) {
+            return { status: 400, body: { error: built.error } }
+          }
+          configInput.command = built.config.command
+          configInput.args = built.config.args
+        } else if (!configInput.command && !configInput.url) {
+          if (!built.ok) {
+            return { status: 400, body: { error: built.error } }
+          }
+          if (built.config.command) {
+            configInput.command = built.config.command
+            configInput.args = built.config.args
+          }
+          if (built.config.url) configInput.url = built.config.url
+          if (built.config.auth && !configInput.auth) configInput.auth = built.config.auth
+        }
+      }
+
+      if (serverId === 'tianshu-research' && configInput.disabled !== true) {
+        const conflict = checkResearchSurfaceConflict('mcp')
+        if (conflict.conflict) {
+          return { status: 400, body: { error: conflict.error } }
+        }
+      }
 
       const parsed = mcpServerConfigSchema.safeParse(configInput)
       if (!parsed.success) {
@@ -183,12 +218,24 @@ export function buildMcpRoutes(
       servers[serverId] = parsed.data
       persistMcpServers(servers)
 
+      const gen = (serverGenerations.get(serverId) ?? 0) + 1
+      serverGenerations.set(serverId, gen)
+
       // If manager is live, try connecting immediately. If not yet ready, the
       // config is on disk and runServe's post-init reconcile will pick it up —
       // do NOT silently drop the connect forever.
       const mgr = getMgr()
-      if (mgr && !parsed.data.disabled) {
+      if (parsed.data.disabled) {
+        if (mgr) {
+          void mgr.shutdownServer(serverId).catch(() => {})
+        }
+        deps.onToolsRemoved?.(serverId)
+      } else if (mgr) {
         void mgr.connectAndDiscover(serverId, parsed.data).then((tools) => {
+          if (serverGenerations.get(serverId) !== gen) {
+            serverLogger.warn(`MCP auto-connect for ${serverId} superseded (gen ${gen}), discarding`)
+            return
+          }
           if (tools.length > 0) onToolsReady?.(tools)
           else {
             // Connection may have failed — still surface nothing here; UI polls status.
@@ -231,6 +278,9 @@ export function buildMcpRoutes(
       const serverId = params?.id
       if (!serverId) return { status: 400, body: { error: 'server id is required' } }
 
+      const gen = (serverGenerations.get(serverId) ?? 0) + 1
+      serverGenerations.set(serverId, gen)
+
       const servers = cloneMcpServers()
       if (!servers[serverId]) {
         return { status: 404, body: { error: `MCP server "${serverId}" not found` } }
@@ -242,6 +292,7 @@ export function buildMcpRoutes(
       if (mgr) {
         await mgr.shutdownServer(serverId).catch(() => {})
       }
+      deps.onToolsRemoved?.(serverId)
 
       return { status: 200, body: { ok: true, removed: serverId } }
     }, token),
@@ -254,13 +305,19 @@ export function buildMcpRoutes(
       const mgr = getMgr()
       if (!mgr) return { status: 503, body: { error: 'MCP manager not initialized' } }
 
+      const gen = (serverGenerations.get(serverId) ?? 0) + 1
+      serverGenerations.set(serverId, gen)
+      deps.onToolsRemoved?.(serverId)
+
       try {
         await mgr.shutdownServer(serverId)
         const cfg = loadConfig().mcp?.servers[serverId]
         if (!cfg) return { status: 404, body: { error: `MCP server "${serverId}" not found in config` } }
         if (cfg.disabled) return { status: 400, body: { error: `MCP server "${serverId}" is disabled` } }
         const tools = await mgr.connectAndDiscover(serverId, cfg)
-        notifyTools(mgr, serverId)
+        if (serverGenerations.get(serverId) === gen) {
+          notifyTools(mgr, serverId)
+        }
         const state = mgr.getStates().find((s) => s.serverId === serverId)
         if (state?.status === 'error') {
           return { status: 500, body: { error: state.error ?? 'connect failed', serverId, lastErrorClass: state.lastErrorClass } }
@@ -364,3 +421,6 @@ export function buildMcpRoutes(
     }, token),
   }
 }
+
+
+

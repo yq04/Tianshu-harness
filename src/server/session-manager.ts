@@ -324,6 +324,7 @@ export interface ManagedAgent {
    * lightweight test doubles need not implement it.
    */
   registerExternalTools?(tools: Tool[]): void
+  unregisterExternalTools?(toolNamesOrPrefix: string | string[]): void
   /** Current reasoning effort level (off/low/medium/high/max). */
   getReasoningEffort?(): string | undefined
   /** Set the reasoning effort level (off/low/medium/high/max) or return to auto. */
@@ -4542,6 +4543,23 @@ export class RuntimeSessionManager {
         s.agent.registerExternalTools?.(tools)
       } catch {
         /* best-effort per session — one failure must not block others */
+      }
+    }
+  }
+
+
+  /**
+   * Remove MCP tools belonging to a server from every session that already has a live ManagedAgent.
+   */
+  removeMcpTools(serverId: string): void {
+    if (!serverId) return
+    const prefix = "mcp__" + serverId + "__"
+    for (const s of this.sessions.values()) {
+      if (!s.agent || s.record.archived) continue
+      try {
+        s.agent.unregisterExternalTools?.(prefix)
+      } catch {
+        /* best-effort per session */
       }
     }
   }
